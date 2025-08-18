@@ -268,6 +268,10 @@ grub_main (void)
   /* First of all, initialize the machine.  */
   grub_machine_init ();
 
+  extern char _start;
+  grub_printf("_start addr=%p\n",(void *)&_start;
+  grub_getkey();
+	
   grub_boot_time ("After machine init.");
 
   /* Hello.  */
