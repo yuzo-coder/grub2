@@ -26,6 +26,12 @@ transform_data = {
 
 transform_data = {
   installdir = platform;
+  name = gdb_helper.sh;
+  common = gdb_helper.sh.in;
+};
+
+transform_data = {
+  installdir = platform;
   name = gdb_grub;
   common = gdb_grub.in;
 };

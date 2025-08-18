@@ -1,0 +1,145 @@
+[PATCH v4 06/15] gdb: Add functions to make loading from dynamically positioned targets easier
+From: Glenn Washburn <development@efficientek.com>
+Subject: [PATCH v4 06/15] gdb: Add functions to make loading from dynamically positioned targets easier
+Date: Thu, 15 Dec 2022 23:29:29 -0600
+
+Many targets, such as EFI, load GRUB at addresses that are determined at
+runtime. So the load addresses in kernel.exec will almost certainly be
+wrong. Given the address of the start of the text segment, these
+functions will tell GDB to load the symbols at the proper locations. It
+is left up to the user to determine how to get the text address.
+
+Signed-off-by: Glenn Washburn <development@efficientek.com>
+---
+ grub-core/Makefile.core.def |  6 ++++
+ grub-core/gdb_grub.in       | 27 ++++++++++++++++
+ grub-core/gdb_helper.sh.in  | 62 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 95 insertions(+)
+ create mode 100644 grub-core/gdb_helper.sh.in
+
+diff --git a/grub-core/Makefile.core.def b/grub-core/Makefile.core.def
+index 95942fc8c9..253b9b1e47 100644
+--- a/grub-core/Makefile.core.def
++++ b/grub-core/Makefile.core.def
+@@ -24,6 +24,12 @@ transform_data = {
+   common = gmodule.pl.in;
+ };
+ 
++transform_data = {
++  installdir = platform;
++  name = gdb_helper.sh;
++  common = gdb_helper.sh.in;
++};
++
+ transform_data = {
+   installdir = platform;
+   name = gdb_grub;
+diff --git a/grub-core/gdb_grub.in b/grub-core/gdb_grub.in
+index 1fb9603ff8..d97dbfdc0d 100644
+--- a/grub-core/gdb_grub.in
++++ b/grub-core/gdb_grub.in
+@@ -9,6 +9,33 @@
+ ### Lubomir Kundrak <lkudrak@skosi.org>
+ ###
+ 
++define dynamic_load_kernel_exec_symbols
++       shell rm -f .remove-kernel.exec.symfile.gdb
++       shell sh gdb_helper.sh gen_kernel_exec_loadsym $arg0 
+>.kernel.exec.loadsym.gdb
++       source .kernel.exec.loadsym.gdb
++end
++document dynamic_load_kernel_exec_symbols
++       Load debugging symbols from kernel.exec given the address of the
++       .text segment of the UEFI binary in memory.
++end
++
++define dynamic_load_symbols
++       dynamic_load_kernel_exec_symbols $arg0
++
++       # We may have been very late to loading the kernel.exec symbols and
++       # and modules may already be loaded. So load symbols for any already
++       # loaded.
++       load_all_modules
++
++       runtime_load_module
++end
++document dynamic_load_symbols
++       Load debugging symbols from kernel.exec and any loaded modules given
++       the address of the .text segment of the UEFI binary in memory. Also
++       setup session to automatically load module symbols for modules loaded
++       in the future.
++end
++
+ # Add section numbers and addresses to .segments.tmp
+ define dump_module_sections_helper
+        set $mod = $arg0
+diff --git a/grub-core/gdb_helper.sh.in b/grub-core/gdb_helper.sh.in
+new file mode 100644
+index 0000000000..b37d5adfc2
+--- /dev/null
++++ b/grub-core/gdb_helper.sh.in
+@@ -0,0 +1,62 @@
++###
++### Helper functions for GRUB's GDB script.
++###
++
++alignup() {
++  PAD=1
++  if [ "$(($1%$2))" -eq 0 ]; then
++    PAD=0
++  fi
++  printf "0x%x\n" "$(((($1/$2)+$PAD)*$2))"
++}
++
++exp() {
++  BASE=${1%%\*\**}
++  EXP=${1##*\*\*}
++  RES=1
++  while [ "$EXP" -gt 0 ]; do
++    RES=$(($RES*$BASE))
++    EXP=$(($EXP - 1))
++  done
++  echo $RES
++}
++
++# Loading symbols is complicated by the fact that kernel.exec is an ELF
++# ELF binary, but the UEFI runtime is PE32+. All the data sections of
++# the ELF binary are concatenated (accounting for ELF section alignment)
++# and put into one .data section in the PE32+ runtime image. So given
++# the load address of the .data PE32+ section we can determine the
++# addresses each ELF data section maps to. The UEFI application is
++# loaded into memory just as it is laid out in the file. It is not
++# assumed that the binary is available, but it is known that the .text
++# section directly precedes the .data section and that .data is EFI
++# page aligned. Using this, the .data offset from .text can be found.
++gen_kernel_exec_loadsym() {
++  PE_SECTION_ALIGN=$((1<<12))
++  PE_TEXT=$1
++  TSIZE=$((0x$(objdump -h kernel.exec | grep -E " \.text\b" | \
++                  (read _ _ SIZE _; echo $SIZE))))
++  PE_DATA_OFF=$(printf "0x%x" $(($(alignup ${TSIZE} ${PE_SECTION_ALIGN}))))
++
++  printf "add-symbol-file kernel.exec ${PE_TEXT}"
++  objdump -h kernel.exec | tail -n +6 | \
++    while read IDX NAME SIZE _ _ OFFSET ALIGN; do
++      read FLAGS
++      if [ -n "$FLAGS" ] && [ -z "${FLAGS%%*DATA*}" -o "$NAME" = .bss ]; then
++        OFF=$(alignup ${OFF:-0} $(exp $ALIGN))
++       printf " -s $NAME (${PE_TEXT}+${PE_DATA_OFF}+0x%x)" "$OFF"
++        OFF=$((${OFF} + 0x${SIZE}))
++      fi
++    done
++}
++
++if type "$1" 2>/dev/null | grep -q 'is a shell function'; then
++  if [ "x${GRUB_GDB_TRACE}" = "xy" ]; then
++    exec 2>>gdb_helper.trace
++    set -x
++  fi
++
++  "$@"
++else
++  exit 1
++fi
+-- 
+2.34.1
