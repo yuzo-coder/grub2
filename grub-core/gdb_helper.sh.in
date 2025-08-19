@@ -1,0 +1,62 @@
+###
+### Helper functions for GRUB's GDB script.
+###
+
+alignup() {
+  PAD=1
+  if [ "$(($1%$2))" -eq 0 ]; then
+    PAD=0
+  fi
+  printf "0x%x\n" "$(((($1/$2)+$PAD)*$2))"
+}
+
+exp() {
+  BASE=${1%%\*\**}
+  EXP=${1##*\*\*}
+  RES=1
+  while [ "$EXP" -gt 0 ]; do
+    RES=$(($RES*$BASE))
+    EXP=$(($EXP - 1))
+  done
+  echo $RES
+}
+
+# Loading symbols is complicated by the fact that kernel.exec is an ELF
+# ELF binary, but the UEFI runtime is PE32+. All the data sections of
+# the ELF binary are concatenated (accounting for ELF section alignment)
+# and put into one .data section in the PE32+ runtime image. So given
+# the load address of the .data PE32+ section we can determine the
+# addresses each ELF data section maps to. The UEFI application is
+# loaded into memory just as it is laid out in the file. It is not
+# assumed that the binary is available, but it is known that the .text
+# section directly precedes the .data section and that .data is EFI
+# page aligned. Using this, the .data offset from .text can be found.
+gen_kernel_exec_loadsym() {
+  PE_SECTION_ALIGN=$((1<<12))
+  PE_TEXT=$1
+  TSIZE=$((0x$(objdump -h kernel.exec | grep -E " \.text\b" | \
+                  (read _ _ SIZE _; echo $SIZE))))
+  PE_DATA_OFF=$(printf "0x%x" $(($(alignup ${TSIZE} ${PE_SECTION_ALIGN}))))
+
+  printf "add-symbol-file kernel.exec ${PE_TEXT}"
+  objdump -h kernel.exec | tail -n +6 | \
+    while read IDX NAME SIZE _ _ OFFSET ALIGN; do
+      read FLAGS
+      if [ -n "$FLAGS" ] && [ -z "${FLAGS%%*DATA*}" -o "$NAME" = .bss ]; then
+        OFF=$(alignup ${OFF:-0} $(exp $ALIGN))
+       printf " -s $NAME (${PE_TEXT}+${PE_DATA_OFF}+0x%x)" "$OFF"
+        OFF=$((${OFF} + 0x${SIZE}))
+      fi
+    done
+}
+
+if type "$1" 2>/dev/null | grep -q 'is a shell function'; then
+  if [ "x${GRUB_GDB_TRACE}" = "xy" ]; then
+    exec 2>>gdb_helper.trace
+    set -x
+  fi
+
+  "$@"
+else
+  exit 1
+fi
